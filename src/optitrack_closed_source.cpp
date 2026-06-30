@@ -189,10 +189,19 @@ namespace libmotioncapture {
     pImpl->received = false;
     pImpl->data_m.unlock();
 
-    // wait for update
-    std::unique_lock<std::mutex> lk(pImpl->cv_m);
-    pImpl->cv.wait(lk, [this] { return pImpl->received; });
-    
+    // wait for update.
+    // NOTE: cv_m is released (end of this scope) BEFORE re-acquiring data_m.
+    // The frame callback locks data_m first and then cv_m (A->B); if we held
+    // cv_m here while taking data_m (B->A) we'd get a lock-order inversion
+    // (ABBA) deadlock the moment a frame arrives in this window: the main
+    // thread waits for data_m holding cv_m, the callback waits for cv_m
+    // holding data_m, the NatNet socket stops draining and /tf publication
+    // silently stops. Scoping cv_m keeps the lock order consistent.
+    {
+      std::unique_lock<std::mutex> lk(pImpl->cv_m);
+      pImpl->cv.wait(lk, [this] { return pImpl->received; });
+    }
+
     // lock data mutex for user to use data safely
     pImpl->data_m.lock();
   }
